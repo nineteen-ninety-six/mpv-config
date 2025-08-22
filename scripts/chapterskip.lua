@@ -1,5 +1,5 @@
 --[[
-  * chapterskip.lua v.2025-08-19
+  * chapterskip.lua v.2025-08-22
   *
   * AUTHORS: detuur, microraptor, Eisa01, dyphire
   * License: MIT
@@ -54,14 +54,14 @@ local utils = require 'mp.utils'
 
 local categories = {
     prologue = "^[Pp]rologue/^[Ii]ntro",
-    opening = "^OP/ OP$/^[Oo]pening/[Oo]pening$",
-    ending = "^ED/ ED$/^[Ee]nding/[Ee]nding$",
+    opening = "^OP/ OP$/^[Oo]pening/[Oo]pening$/^Intro%s*Start/オープニング$/^片头$/片头开始$",
+    ending = "^ED/ ED$/^[Ee]nding/[Ee]nding$/エンディング$",
     credits = "^[Cc]redits/[Cc]redits$",
     preview = "[Pp]review$"
 }
 
 local o = {
-    enabled = false,
+    mode = "manual",
     skip_once = true,
     categories = "",
     skip = "",
@@ -251,18 +251,88 @@ message_timer = mp.add_timeout(1, function ()
     message_overlay:remove()
 end, true)
 
-local function send_message(msg, time, color)
+local function show_message(msg, time, color)
     local text = color and format_message(msg, color) or msg
-    message_timer:kill()
-    message_timer.timeout = time or 1
     message_overlay.data = text
     message_overlay:update()
+    message_timer:kill()
+    message_timer.timeout = time or 1
     message_timer:resume()
 end
 
 local function info(s)
     msg.info(s)
-    send_message(s, 2)
+    show_message(s, 2)
+end
+
+local confirm_timer = nil
+
+local function cancel_skip_prompt()
+    if confirm_timer then
+        confirm_timer:kill()
+        confirm_timer = nil
+    end
+    mp.remove_key_binding("skip-confirm")
+    mp.remove_key_binding("skip-cancel")
+end
+
+local function confirm_skip_prompt(action)
+    cancel_skip_prompt()
+    if action then action() end
+end
+
+local function show_skip_prompt(action)
+    if confirm_timer then
+        return
+    end
+
+    local countdown = 15
+    local function update_msg()
+        if not confirm_timer or not confirm_timer:is_enabled() then
+            return
+        end
+
+        local yn_text = "{\\c&H00FFFF&}[y/n]{\\c&HFFFFFF&}"
+
+        show_message(string.format(
+            "A skippable segment has been detected.\nDo you want to skip it? %s\nTime remaining: %d seconds",
+            yn_text,
+            countdown
+        ), 1)
+        countdown = countdown - 1
+        if countdown < 0 then
+            cancel_skip_prompt()
+        end
+    end
+
+    update_msg()
+    confirm_timer = mp.add_periodic_timer(1, update_msg)
+
+    mp.add_forced_key_binding("y", "skip-confirm", function() confirm_skip_prompt(action) end)
+    mp.add_forced_key_binding("n", "skip-cancel", cancel_skip_prompt)
+end
+
+local function do_skip_with_mode(action)
+    if o.mode == "none" then
+        msg.verbose("Skipping is disabled")
+        return
+    elseif o.mode == "manual" then
+        show_skip_prompt(action)
+    else -- "auto"
+        action()
+    end
+end
+
+local function switch_chapterskip()
+    if o.mode == "none" then
+        o.mode = "auto"
+    elseif o.mode == "auto" then
+        o.mode = "manual"
+    else
+        o.mode = "none"
+    end
+    
+    info("Chapter skip mode: " .. o.mode)
 end
 
 local function matches(i, title)
@@ -287,12 +357,8 @@ local function matches(i, title)
     end
 end
 
-local function toggle_chapterskip()
-    o.enabled = not o.enabled
-end
-
 local function chapterskip(_, current)
-    if not o.enabled then return end
+    if o.mode == "none" then return end
     for category in string.gmatch(o.categories, "([^;]+)") do
         local name, patterns = string.match(category, " *([^+>]*[^+> ]) *[+>](.*)")
         if name then
@@ -313,8 +379,11 @@ local function chapterskip(_, current)
                 skip = i
             end
         elseif skip then
-            mp.set_property("time-pos", chapter.time)
-            skipped[skip] = true
+            do_skip_with_mode(function()
+                info("Skipping chapter: " .. (chapters[skip].title or ("Chapter "..skip)))
+                mp.set_property("time-pos", chapter.time)
+                skipped[skip] = true
+            end)
             return
         end
     end
@@ -366,7 +435,7 @@ local function cache_skip()
 end
 
 local function start_skip_watcher()
-    if skip_timer or not o.enabled then return end
+    if skip_timer or o.mode == "none" then return end
     skip_timer = mp.add_periodic_timer(0.5, function()
         local t = mp.get_property_number("time-pos")
         if not t then return end
@@ -374,10 +443,11 @@ local function start_skip_watcher()
         for i = #active_skips, 1, -1 do
             local s = active_skips[i]
             if (t >= s.start - 0.5 and t < s.ended) then
-                send_message(("Auto-skip: %s-%s"):format(timestamp(s.start), timestamp(s.ended)), 2)
-                msg.info(("Auto-skip: %s-%s"):format(timestamp(s.start), timestamp(s.ended)))
-                mp.set_property_number("time-pos", s.ended)
-                table.remove(active_skips, i)
+                do_skip_with_mode(function()
+                    info(("Auto-skip: %s-%s"):format(timestamp(s.start), timestamp(s.ended)))
+                    mp.set_property_number("time-pos", s.ended)
+                    table.remove(active_skips, i)
+                end)
             elseif t >= s.ended then
                 table.remove(active_skips, i)
             end
@@ -463,7 +533,7 @@ end
 local function toggle_markskip()
     local pos, err = mp.get_property_number("time-pos")
     if not pos then
-        send_message("Failed to get timestamp", 2)
+        show_message("Failed to get timestamp", 2)
         msg.error("Failed to get timestamp: " .. err)
         return
     end
@@ -472,7 +542,7 @@ local function toggle_markskip()
         if shift > endpos then
             shift, endpos = endpos, shift
         elseif shift == endpos then
-            send_message("Mark fragment is empty", 2)
+            show_message("Mark fragment is empty", 2)
             return
         end
         mark_pos = nil
@@ -501,7 +571,7 @@ local function restoreProp(pause)
     mp.set_property_bool("pause", pause)
     mp.set_property("sub-visibility", sub_state)
     mp.set_property("secondary-sub-visibility", secondary_sub_state)
-    timer:kill()
+    if timer then timer:kill() end
     skip_flag = false
 end
 
@@ -636,6 +706,6 @@ mp.add_hook('on_unload', 9, function()
     end
 end)
 
-mp.register_script_message("chapter-skip", toggle_chapterskip)
+mp.register_script_message("chapter-skip", switch_chapterskip)
 mp.register_script_message("toggle-markskip", toggle_markskip)
 mp.register_script_message("skip-to-silence", doSkip)

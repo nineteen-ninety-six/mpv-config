@@ -151,10 +151,10 @@ local message_timer = mp.add_timeout(1, function ()
 end, true)
 
 function show_message(text, time)
-    message_timer:kill()
-    message_timer.timeout = time or 1
     message_overlay.data = text
     message_overlay:update()
+    message_timer:kill()
+    message_timer.timeout = time or 1
     message_timer:resume()
 end
 

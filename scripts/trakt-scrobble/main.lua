@@ -253,10 +253,10 @@ end, true)
 
 function send_message(msg, time, color)
     local text = color and format_message(msg, color) or msg
-    message_timer:kill()
-    message_timer.timeout = time or 1
     message_overlay.data = text
     message_overlay:update()
+    message_timer:kill()
+    message_timer.timeout = time or 1
     message_timer:resume()
 end
 
